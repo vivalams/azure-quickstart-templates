@@ -3,17 +3,43 @@
 # Licensed under the MIT license. See LICENSE file on the project webpage for details.
 
 set -x
-export OPENEDX_RELEASE=$1
-APP_VM_COUNT=$2
-ADMIN_USER=$3
-ADMIN_PASS=$4
-ADMIN_HOME=/home/$ADMIN_USER
-CONFIG_REPO=https://github.com/chenriksson/edx-configuration.git
-CONFIG_VERSION=dogwood.3
-ANSIBLE_ROOT=/edx/app/edx_ansible
 
+APP_VM_COUNT=$1
+ADMIN_USER=$2
+ADMIN_PASS=$3
+ADMIN_HOME=/home/$ADMIN_USER
+
+EDX_VERSION="named-release/dogwood.3"
+
+# Run edX bootstrap
+ANSIBLE_ROOT=/edx/app/edx_ansible
+#CONFIGURATION_REPO=https://github.com/Microsoft/edx-configuration.git
+CONFIGURATION_REPO=https://github.com/chenriksson/edx-configuration.git
+CONFIGURATION_VERSION="dogwood.3"
 wget https://raw.githubusercontent.com/edx/configuration/master/util/install/ansible-bootstrap.sh -O- | bash
 
+# Stage configuration files
+PLATFORM_REPO=https://github.com/Microsoft/edx-platform.git
+PLATFORM_VERSION="lex/dogwood.3"
+
+for i in `seq 1 $(($APP_VM_COUNT-1))`; do
+  echo "10.0.0.1$i" >> inventory.ini
+done
+
+bash -c "cat <<EOF >extra-vars.yml
+---
+edx_platform_repo: \"$PLATFORM_REPO\"
+edx_platform_version: \"$PLATFORM_VERSION\"
+edx_ansible_source_repo: \"$CONFIGURATION_REPO\"
+configuration_version: \"$CONFIGURATION_VERSION\"
+certs_version: \"$EDX_VERSION\"
+forum_version: \"$EDX_VERSION\"
+xqueue_version: \"$EDX_VERSION\"
+COMMON_SSH_PASSWORD_AUTH: \"yes\"
+EOF"
+sudo -u edx-ansible cp *.{ini,yml} $ANSIBLE_ROOT
+
+# Setup SSH for remote installation
 apt-get -y install sshpass
 function send-ssh-key {
     host=$1;user=$2;pass=$3;
@@ -32,30 +58,10 @@ done
 send-ssh-key 10.0.0.20 $ADMIN_USER $ADMIN_PASS
 send-ssh-key 10.0.0.30 $ADMIN_USER $ADMIN_PASS
 
-for i in `seq 1 $(($APP_VM_COUNT-1))`; do
-  echo "10.0.0.1$i" >> inventory.ini
-done
+# Install edX platform
+cd $ANSIBLE_ROOT/edx_ansible/playbooks
+pip install -r ../requirements.txt
 
-bash -c "cat <<EOF >extra-vars.yml
----
-edx_platform_version: \"$OPENEDX_RELEASE\"
-certs_version: \"$OPENEDX_RELEASE\"
-forum_version: \"$OPENEDX_RELEASE\"
-xqueue_version: \"$OPENEDX_RELEASE\"
-configuration_version: \"$CONFIG_VERSION\"
-edx_ansible_source_repo: \"$CONFIG_REPO\"
-COMMON_SSH_PASSWORD_AUTH: \"yes\"
-EOF"
-sudo -u edx-ansible cp *.{ini,yml} $ANSIBLE_ROOT
-
-cd /tmp
-git clone $CONFIG_REPO configuration
-
-cd configuration
-git checkout $CONFIG_VERSION
-pip install -r requirements.txt
-
-cd playbooks
 export ANSIBLE_OPT_VARS="-e@$ANSIBLE_ROOT/server-vars.yml -e@$ANSIBLE_ROOT/extra-vars.yml"
 export ANSIBLE_OPT_SSH="-u $ADMIN_USER --private-key=$ADMIN_HOME/.ssh/id_rsa"
 
